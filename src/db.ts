@@ -54,6 +54,10 @@ export interface PlayerDoc {
   questGold?: number;
   quests?: { progress: Record<string, number>; done: string[]; epoch: Record<string, number> };
   rewards?: string[];
+  // Onboarding progress (constants.ts TUTORIAL_DONE_STEP = finished). Only ever moves forward
+  // ($max in WorldRoom.ts saveProgress). A doc without the field predates the tutorial and
+  // reads as finished (sanitize.ts resolveTutorialStep).
+  tutorialStep?: number;
   potions?: Record<string, number>;
   boostUntil?: Record<string, number>;
   // Total seconds connected, measured by the SERVER clock (WorldRoom.ts flushPlaytime) --

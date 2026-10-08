@@ -1,6 +1,6 @@
 import {
   CURRENCY_MAX, REBIRTH_MAX, LEVEL_MAX, UPGRADE_LEVEL_MAX, PETS_OWNED_MAX, BAG_SAVE_MAX, DISCOVERED_MAX,
-  OWNED_IDS_MAX, SPINS_MAX, TIER_MAX, ITEM_VALUE_MAX, TEXT_MAX, PET_ID_MAX, RARITIES, UPGRADE_IDS, PASS_IDS, QUEST_IDS, QUEST_GROUP_IDS,
+  OWNED_IDS_MAX, SPINS_MAX, TIER_MAX, ITEM_VALUE_MAX, TEXT_MAX, PET_ID_MAX, RARITIES, UPGRADE_IDS, PASS_IDS, QUEST_IDS, QUEST_GROUP_IDS, TUTORIAL_DONE_STEP,
 } from "./constants.js";
 import type { LootDoc, PetDoc, PlayerDoc } from "./db.js";
 
@@ -128,6 +128,7 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
   if (finite(raw.luckyRolls)) out.luckyRolls = clampInt(raw.luckyRolls, SPINS_MAX);
   if (finite(raw.luckUntil)) out.luckUntil = clampNum(raw.luckUntil, 8.64e15);
   if (finite(raw.questGold)) out.questGold = clampNum(raw.questGold, CURRENCY_MAX);
+  if (finite(raw.tutorialStep)) out.tutorialStep = clampInt(raw.tutorialStep, TUTORIAL_DONE_STEP);
   if (raw.quests !== undefined) out.quests = sanitizeQuests(raw.quests);
   if (raw.rewards !== undefined) out.rewards = sanitizeSlugs(raw.rewards);
   if (raw.potions !== undefined) out.potions = sanitizeKeyed(raw.potions, POTION_IDS, 999_999);
@@ -153,4 +154,10 @@ export function sanitizeProgress(raw: unknown): Partial<PlayerDoc> | null {
     };
   }
   return out;
+}
+
+// What loadProgress sends down as tutorialStep: a doc that predates the field belongs to a
+// player who was never shown the tutorial, so it reads as finished.
+export function resolveTutorialStep(doc: Partial<PlayerDoc>): number {
+  return finite(doc.tutorialStep) ? clampInt(doc.tutorialStep, TUTORIAL_DONE_STEP) : TUTORIAL_DONE_STEP;
 }

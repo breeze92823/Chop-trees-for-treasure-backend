@@ -74,6 +74,9 @@ export const PASS_IDS: readonly string[] = ["slots", "wood2x"];
 export const QUEST_IDS: readonly string[] = ["sell", "time", "strength", "mythic"];
 export const QUEST_GROUP_IDS: readonly string[] = ["quick", "daily"];
 
+// Client data/tutorial.js: the onboarding runs steps 0..TUTORIAL_DONE_STEP (5 = finished).
+export const TUTORIAL_DONE_STEP = 5;
+
 // The client's per-browser fallback id for players who are not signed in to Bloxity
 // (systems/net.js localGuestId). Guests are never persisted.
 export const GUEST_ID_PREFIX = "guest-";
