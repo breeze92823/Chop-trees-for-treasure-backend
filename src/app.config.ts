@@ -1,9 +1,13 @@
 import cors from "cors";
-import { defineServer, defineRoom, monitor, playground } from "colyseus";
+import { defineServer, defineRoom, monitor, playground, WebSocketTransport } from "colyseus";
 
 import { WorldRoom } from "./rooms/WorldRoom.js";
+import { MAX_PAYLOAD_BYTES } from "./constants.js";
 
 const server = defineServer({
+  // saveProgress carries the whole pet list and bag, far over the default 4 KB message cap.
+  transport: new WebSocketTransport({ maxPayload: MAX_PAYLOAD_BYTES }),
+
   rooms: {
     // The client calls joinOrCreate("world", ...) (client data/config.js NET.room).
     world: defineRoom(WorldRoom),

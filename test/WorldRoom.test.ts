@@ -1,15 +1,65 @@
 import assert from "assert";
+import type { Collection } from "mongodb";
 import { ColyseusTestServer, boot } from "@colyseus/testing";
 
 import appConfig from "../src/app.config.js";
 import { WorldState } from "../src/rooms/schema/WorldState.js";
 import { SPAWN, WORLD_BOUNDS } from "../src/constants.js";
+import { __setPlayersForTest, type PlayerDoc } from "../src/db.js";
+import { offlineReward } from "../src/rooms/WorldRoom.js";
 
 // waitForNextPatch() resolves on the server's tick, which can be before a
 // connected client has decoded it; poll the client's view instead.
 async function until(check: () => boolean, ms = 1000) {
   const end = Date.now() + ms;
   while (!check() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+}
+
+// Hand-rolled fake `players` collection implementing only the subset WorldRoom.ts calls:
+// find().sort().limit().toArray(), updateOne() (upsert, $set/$inc), findOne().
+function fakePlayersCollection(seed: PlayerDoc[] = []) {
+  const docs = new Map<string, PlayerDoc>(seed.map((d) => [d._id, d]));
+  const fake = {
+    docs,
+    async findOne(filter: { _id: string }) {
+      return docs.get(filter._id) ?? null;
+    },
+    async updateOne(filter: { _id: string; offlineSeconds?: number }, update: any, options: any) {
+      const existing = docs.get(filter._id);
+      if (!existing && !options?.upsert) return { modifiedCount: 0 };
+      // The compare-and-set claimOffline relies on.
+      if (existing && filter.offlineSeconds !== undefined && existing.offlineSeconds !== filter.offlineSeconds) return { modifiedCount: 0 };
+      const base = existing ?? ({ _id: filter._id, ...(update.$setOnInsert ?? {}) } as PlayerDoc);
+      const next = { ...base, ...(update.$set ?? {}) } as any;
+      for (const [k, v] of Object.entries(update.$inc ?? {})) next[k] = (next[k] ?? 0) + (v as number);
+      docs.set(filter._id, next as PlayerDoc);
+      return { modifiedCount: 1 };
+    },
+    find(_filter: any) {
+      let sortField: string | null = null;
+      let limitN = Infinity;
+      const cursor = {
+        sort(spec: Record<string, number>) {
+          sortField = Object.keys(spec)[0];
+          return cursor;
+        },
+        limit(n: number) {
+          limitN = n;
+          return cursor;
+        },
+        async toArray() {
+          let arr = Array.from(docs.values());
+          if (sortField) {
+            const field = sortField;
+            arr = arr.slice().sort((a: any, b: any) => (b[field] ?? 0) - (a[field] ?? 0));
+          }
+          return arr.slice(0, limitN);
+        },
+      };
+      return cursor;
+    },
+  };
+  return fake as unknown as Collection<PlayerDoc> & { docs: Map<string, PlayerDoc> };
 }
 
 describe("WorldRoom", () => {
@@ -20,6 +70,7 @@ describe("WorldRoom", () => {
   beforeEach(async () => {
     await colyseus.cleanup();
   });
+  afterEach(() => __setPlayersForTest(null));
 
   it("starts a joining player at the spawn, with their name and avatar", async () => {
     const room = await colyseus.createRoom<WorldState>("world", {});
@@ -128,5 +179,160 @@ describe("WorldRoom", () => {
     await room.waitForNextPatch();
     assert.strictEqual(c2.state.players.size, 1);
     assert.strictEqual(c2.state.players.has(c1.sessionId), false);
+  });
+
+
+  it("saves a signed-in player's progress", async () => {
+    const fake = fakePlayersCollection();
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const c = await colyseus.connectTo(room, { userId: "u1", username: "Ashan" });
+
+    c.send("saveProgress", {
+      wood: 120, cash: 50, strength: 33, rebirths: 1,
+      pets: [{ id: 1, egg: "spotted", name: "Bear" }], equipped: [1],
+    });
+    await until(() => fake.docs.has("u1"));
+    const doc = fake.docs.get("u1")!;
+    assert.strictEqual(doc.wood, 120);
+    assert.strictEqual(doc.username, "Ashan");
+    assert.deepStrictEqual(doc.equipped, [1]);
+    assert.strictEqual(room.state.players.get(c.sessionId)!.rebirths, 1);
+  });
+
+  it("sends a returning account its saved progress, and noProgress to a new one", async () => {
+    const fake = fakePlayersCollection([
+      {
+        _id: "u2", username: "Back", wood: 900, cash: 7, strength: 40, level: 3,
+        pets: [{ id: 4, egg: "void", name: "Dragon", tier: 1 }], playTime: 100, version: 1, updatedAt: new Date(),
+      },
+    ]);
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+
+    // The reply can land before a client handler is registered, so capture it server-side.
+    const sent: [string, any][] = [];
+    const orig = (room as any).loadProgress.bind(room);
+    (room as any).loadProgress = (c: any, ...rest: any[]) => {
+      const send = c.send.bind(c);
+      c.send = (type: string, msg: any) => {
+        sent.push([type, msg]);
+        send(type, msg);
+      };
+      return orig(c, ...rest);
+    };
+
+    const back = await colyseus.connectTo(room, { userId: "u2", username: "Back" });
+    const fresh = await colyseus.connectTo(room, { userId: "u-new", username: "Fresh" });
+    await until(() => sent.length >= 2);
+
+    const progress = sent.find(([t]) => t === "progress")![1];
+    assert.strictEqual(progress.wood, 900);
+    assert.deepStrictEqual(progress.pets, [{ id: 4, egg: "void", name: "Dragon", tier: 1 }]);
+    assert.strictEqual(progress.playTime, 100);
+    assert.ok(sent.some(([t]) => t === "noProgress"));
+
+    const p = room.state.players.get(back.sessionId)!;
+    assert.strictEqual(p.cash, 7);
+    assert.strictEqual(p.strength, 40);
+    assert.ok(fresh);
+  });
+
+  it("accepts a save far larger than Colyseus's default 4 KB message cap", async () => {
+    const fake = fakePlayersCollection();
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const c = await colyseus.connectTo(room, { userId: "big", username: "Hoarder" });
+    const pets = Array.from({ length: 800 }, (_, i) => ({ id: i + 1, egg: "spotted", name: "Bear" }));
+    c.send("saveProgress", { wood: 1, pets });
+    await until(() => fake.docs.has("big"), 2000);
+    assert.strictEqual(fake.docs.get("big")!.pets!.length, 800);
+  });
+
+  it("offers offline earnings after time away, and pays them out exactly once", async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000);
+    const fake = fakePlayersCollection([
+      { _id: "away", username: "Away", cash: 10, strength: 20, lastSeenAt: twoHoursAgo, version: 1, updatedAt: new Date() },
+    ]);
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+
+    const sent: [string, any][] = [];
+    const orig = (room as any).loadProgress.bind(room);
+    (room as any).loadProgress = (c: any, ...rest: any[]) => {
+      const send = c.send.bind(c);
+      c.send = (type: string, msg: any) => {
+        sent.push([type, msg]);
+        send(type, msg);
+      };
+      return orig(c, ...rest);
+    };
+
+    const c = await colyseus.connectTo(room, { userId: "away", username: "Away" });
+    await until(() => sent.some(([t]) => t === "offlineEarnings"));
+    const offer = sent.find(([t]) => t === "offlineEarnings")![1];
+    assert.ok(offer.seconds >= 7200 && offer.seconds < 7260);
+    assert.strictEqual(offer.cash, 1000);
+    assert.strictEqual(offer.strength, 100);
+
+    const claimed: any[] = [];
+    c.onMessage("offlineClaimed", (m) => claimed.push(m));
+    c.send("claimOffline");
+    c.send("claimOffline"); // a double click
+    await until(() => claimed.length > 0);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepStrictEqual(claimed, [{ cash: 1000, strength: 100 }]);
+    const doc = fake.docs.get("away")!;
+    assert.strictEqual(doc.offlineSeconds, 0);
+    assert.strictEqual(doc.cash, 1010);
+    assert.strictEqual(doc.strength, 120);
+  });
+
+  it("pays nothing for a short absence, and caps long ones", async () => {
+    assert.deepStrictEqual(offlineReward(3600), { seconds: 3600, cash: 500, strength: 50 });
+    assert.strictEqual(offlineReward(100 * 3600).cash, 12 * 500); // capped at 12 h
+
+    const fake = fakePlayersCollection([
+      { _id: "brief", username: "Brief", lastSeenAt: new Date(Date.now() - 10_000), version: 1, updatedAt: new Date() },
+    ]);
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const c = await colyseus.connectTo(room, { userId: "brief", username: "Brief" });
+    const claimed: any[] = [];
+    c.onMessage("offlineClaimed", (m) => claimed.push(m));
+    await new Promise((r) => setTimeout(r, 150));
+    c.send("claimOffline");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepStrictEqual(claimed, []);
+  });
+
+  it("never persists guests", async () => {
+    const fake = fakePlayersCollection();
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const c = await colyseus.connectTo(room, { userId: "guest-abc", username: "Guest" });
+    c.send("saveProgress", { wood: 5, cash: 9 });
+    await until(() => room.state.players.get(c.sessionId)?.cash === 9);
+    assert.strictEqual(fake.docs.size, 0);
+    assert.strictEqual(room.state.players.get(c.sessionId)!.cash, 9); // still on the live board
+  });
+
+  it("broadcasts leaderboards merging saved and online players", async () => {
+    const fake = fakePlayersCollection([
+      { _id: "old", username: "Veteran", cash: 5000, strength: 10, rebirths: 4, playTime: 9, version: 1, updatedAt: new Date() },
+    ]);
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const c = await colyseus.connectTo(room, { userId: "u3", username: "Newbie" });
+    let boards: any = null;
+    c.onMessage("leaderboard", (m) => (boards = m));
+    c.send("saveProgress", { cash: 100, rebirths: 1 });
+    await until(() => room.state.players.get(c.sessionId)?.cash === 100);
+    boards = null;
+    await (room as any).refreshLeaderboard();
+    await until(() => boards !== null);
+    assert.deepStrictEqual(boards.cash.map((r: any) => r.name), ["Veteran", "Newbie"]);
+    assert.deepStrictEqual(boards.rebirths.map((r: any) => r.value), [4, 1]);
+    assert.ok(boards.playTime && boards.strength);
   });
 });
