@@ -23,7 +23,7 @@ import {
   WORLD_BOUNDS,
 } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
-import { sanitizeProgress } from "../sanitize.js";
+import { sanitizeProgress, resolveTutorialStep } from "../sanitize.js";
 
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
@@ -184,12 +184,16 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       if (!userId) return;
       const players = getPlayers();
       if (!players) return; // Mongo unset/unreachable -- degrade silently
+      // The tutorial step only ever moves forward ($max), so a stale or replayed save can never
+      // bring a finished tutorial back.
+      const { tutorialStep, ...rest } = patch;
       try {
         await players.updateOne(
           { _id: userId },
           {
             // Display name comes from this connection's own PlayerState, not `msg`.
-            $set: { ...patch, username: p.username || "Player", ...(p.avatar ? { avatar: p.avatar } : {}), updatedAt: new Date() },
+            $set: { ...rest, username: p.username || "Player", ...(p.avatar ? { avatar: p.avatar } : {}), updatedAt: new Date() },
+            ...(tutorialStep !== undefined && { $max: { tutorialStep } }),
             $setOnInsert: { version: 1 },
           },
           { upsert: true },
@@ -367,7 +371,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       client.send("noProgress", {});
       return;
     }
-    const live = sanitizeProgress(doc) ?? {};
+    const live = { ...(sanitizeProgress(doc) ?? {}), tutorialStep: resolveTutorialStep(doc) };
     this.applyLive(p, live);
     // Saved total (already includes anything flushed while signed in this session).
     p.playTime = doc.playTime ?? 0;
