@@ -2,7 +2,7 @@
   "private": true,
   "name": "chop-trees-for-treasure-server",
   "version": "0.1.0",
-  "description": "Colyseus server for the game base: relays player poses and Bloxity avatars between clients",
+  "description": "Colyseus server for Chop Trees for Treasure: progress saving, pose relay and leaderboards",
   "type": "module",
   "main": "build/index.js",
   "engines": {
@@ -31,6 +31,7 @@
     "@colyseus/tools": "^0.18.1",
     "colyseus": "^0.18.2",
     "cors": "^2.8.6",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "mongodb": "^6.21.0"
   }
 }
