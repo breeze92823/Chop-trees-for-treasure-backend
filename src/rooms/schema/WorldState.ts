@@ -21,6 +21,8 @@ export const PlayerState = schema(
     pets: t.string().default(""),
     // Equipped aura id (client data/auras.js), "" = none.
     aura: t.string().default(""),
+    // Equipped artifact id (client data/artifacts.js), "" = none; worn on the back by every client.
+    artifact: t.string().default(""),
     // The player's Bloxity avatar { equipped, proportions } as an opaque JSON string,
     // stored and relayed as-is (length-capped, never parsed here).
     avatar: t.string().default(""),

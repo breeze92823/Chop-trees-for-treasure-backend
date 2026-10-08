@@ -76,7 +76,7 @@ export function offlineReward(seconds: number) {
 
 /**
  * Room every client joins via `client.joinOrCreate("world", { userId, username, avatar })`.
- * Relays each player's pose, Bloxity avatar, equipped pets and aura to the others, broadcasts
+ * Relays each player's pose, Bloxity avatar, equipped pets, aura and artifact to the others, broadcasts
  * rare-hatch announcements and the leaderboards, and saves/loads each signed-in player's progress
  * (MongoDB, see db.ts). The game is client-authoritative: no gameplay rules live here.
  * Full rooms spill into a fresh one automatically (maxClients).
@@ -161,6 +161,12 @@ export class WorldRoom extends Room<{ state: WorldState }> {
       const p = this.state.players.get(client.sessionId);
       if (!p || typeof msg?.aura !== "string") return;
       if (msg.aura === "" || isPetId(msg.aura)) p.aura = msg.aura;
+    },
+    // Equipped artifact id ("" = none): a short lowercase slug.
+    setArtifact: (client: Client, msg: { artifact?: string }) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || typeof msg?.artifact !== "string") return;
+      if (/^[a-z0-9_-]{0,40}$/.test(msg.artifact)) p.artifact = msg.artifact;
     },
     // A rare hatch: announced to everyone else as { username, pets }. Throttled per client.
     hatch: (client: Client, msg: { pets?: unknown }) => {
