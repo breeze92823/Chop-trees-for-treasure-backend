@@ -36,6 +36,13 @@ export const LEADERBOARD_ROWS = 10;
 // Playtime: how often each connected player's elapsed time is added to their total.
 export const PLAYTIME_FLUSH_MS = 30_000;
 
+// Offline earnings: time away (measured by the SERVER clock) pays out per hour, pro-rated by the
+// second. Shorter absences than the minimum pay nothing; the unclaimed total stops growing at the cap.
+export const OFFLINE_CASH_PER_HOUR = 500;
+export const OFFLINE_STRENGTH_PER_HOUR = 50;
+export const OFFLINE_MIN_SECONDS = 60;
+export const OFFLINE_MAX_SECONDS = 12 * 3600;
+
 // How long a dropped connection (WiFi blip, backgrounded tab) may reconnect with the same session.
 export const RECONNECT_SECONDS = 20;
 
@@ -62,6 +69,10 @@ export const RARITIES: readonly string[] = [
 // Client usePlayerData `upgrades` keys (data/upgrades.js UPGRADES ids) and `passes` keys.
 export const UPGRADE_IDS: readonly string[] = ["range", "speed", "backpack", "move", "eggluck", "petslots"];
 export const PASS_IDS: readonly string[] = ["slots", "wood2x"];
+
+// Client data/quests.js QUESTS ids and QUEST_GROUPS ids (usePlayerData `quests`).
+export const QUEST_IDS: readonly string[] = ["sell", "time", "strength", "mythic"];
+export const QUEST_GROUP_IDS: readonly string[] = ["quick", "daily"];
 
 // The client's per-browser fallback id for players who are not signed in to Bloxity
 // (systems/net.js localGuestId). Guests are never persisted.

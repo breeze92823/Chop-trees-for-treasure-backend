@@ -6,6 +6,7 @@ import appConfig from "../src/app.config.js";
 import { WorldState } from "../src/rooms/schema/WorldState.js";
 import { SPAWN, WORLD_BOUNDS } from "../src/constants.js";
 import { __setPlayersForTest, type PlayerDoc } from "../src/db.js";
+import { offlineReward } from "../src/rooms/WorldRoom.js";
 
 // waitForNextPatch() resolves on the server's tick, which can be before a
 // connected client has decoded it; poll the client's view instead.
@@ -23,13 +24,16 @@ function fakePlayersCollection(seed: PlayerDoc[] = []) {
     async findOne(filter: { _id: string }) {
       return docs.get(filter._id) ?? null;
     },
-    async updateOne(filter: { _id: string }, update: any, options: any) {
+    async updateOne(filter: { _id: string; offlineSeconds?: number }, update: any, options: any) {
       const existing = docs.get(filter._id);
-      if (!existing && !options?.upsert) return;
+      if (!existing && !options?.upsert) return { modifiedCount: 0 };
+      // The compare-and-set claimOffline relies on.
+      if (existing && filter.offlineSeconds !== undefined && existing.offlineSeconds !== filter.offlineSeconds) return { modifiedCount: 0 };
       const base = existing ?? ({ _id: filter._id, ...(update.$setOnInsert ?? {}) } as PlayerDoc);
       const next = { ...base, ...(update.$set ?? {}) } as any;
       for (const [k, v] of Object.entries(update.$inc ?? {})) next[k] = (next[k] ?? 0) + (v as number);
       docs.set(filter._id, next as PlayerDoc);
+      return { modifiedCount: 1 };
     },
     find(_filter: any) {
       let sortField: string | null = null;
@@ -243,6 +247,63 @@ describe("WorldRoom", () => {
     c.send("saveProgress", { wood: 1, pets });
     await until(() => fake.docs.has("big"), 2000);
     assert.strictEqual(fake.docs.get("big")!.pets!.length, 800);
+  });
+
+  it("offers offline earnings after time away, and pays them out exactly once", async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000);
+    const fake = fakePlayersCollection([
+      { _id: "away", username: "Away", cash: 10, strength: 20, lastSeenAt: twoHoursAgo, version: 1, updatedAt: new Date() },
+    ]);
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+
+    const sent: [string, any][] = [];
+    const orig = (room as any).loadProgress.bind(room);
+    (room as any).loadProgress = (c: any, ...rest: any[]) => {
+      const send = c.send.bind(c);
+      c.send = (type: string, msg: any) => {
+        sent.push([type, msg]);
+        send(type, msg);
+      };
+      return orig(c, ...rest);
+    };
+
+    const c = await colyseus.connectTo(room, { userId: "away", username: "Away" });
+    await until(() => sent.some(([t]) => t === "offlineEarnings"));
+    const offer = sent.find(([t]) => t === "offlineEarnings")![1];
+    assert.ok(offer.seconds >= 7200 && offer.seconds < 7260);
+    assert.strictEqual(offer.cash, 1000);
+    assert.strictEqual(offer.strength, 100);
+
+    const claimed: any[] = [];
+    c.onMessage("offlineClaimed", (m) => claimed.push(m));
+    c.send("claimOffline");
+    c.send("claimOffline"); // a double click
+    await until(() => claimed.length > 0);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepStrictEqual(claimed, [{ cash: 1000, strength: 100 }]);
+    const doc = fake.docs.get("away")!;
+    assert.strictEqual(doc.offlineSeconds, 0);
+    assert.strictEqual(doc.cash, 1010);
+    assert.strictEqual(doc.strength, 120);
+  });
+
+  it("pays nothing for a short absence, and caps long ones", async () => {
+    assert.deepStrictEqual(offlineReward(3600), { seconds: 3600, cash: 500, strength: 50 });
+    assert.strictEqual(offlineReward(100 * 3600).cash, 12 * 500); // capped at 12 h
+
+    const fake = fakePlayersCollection([
+      { _id: "brief", username: "Brief", lastSeenAt: new Date(Date.now() - 10_000), version: 1, updatedAt: new Date() },
+    ]);
+    __setPlayersForTest(fake);
+    const room = await colyseus.createRoom<WorldState>("world", {});
+    const c = await colyseus.connectTo(room, { userId: "brief", username: "Brief" });
+    const claimed: any[] = [];
+    c.onMessage("offlineClaimed", (m) => claimed.push(m));
+    await new Promise((r) => setTimeout(r, 150));
+    c.send("claimOffline");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.deepStrictEqual(claimed, []);
   });
 
   it("never persists guests", async () => {

@@ -25,6 +25,7 @@ extra players get a new room. `userId` is the Bloxity id; ids starting `guest-` 
 | `setAvatar` / `setPets` / `setAura` | Bloxity avatar JSON, equipped pet ids (comma-joined), aura id |
 | `hatch` | `{ pets: [id] }` rare-hatch announcement (throttled) |
 | `saveProgress` | the persisted `usePlayerData` keys, debounced (sanitized, upserted in Mongo) |
+| `claimOffline` | pay out the unclaimed offline time (amount comes from the server's own record) |
 | `identify` | `{ userId, username }` after a sign-in / sign-out; answered with `progress` / `noProgress` |
 
 | Server → client | Purpose |
@@ -33,10 +34,14 @@ extra players get a new room. `userId` is the Bloxity id; ids starting `guest-` 
 | `noProgress` | new account, guest, or no Mongo — keep the local state (and push it) |
 | `serverError` | the saved document could not be read; the client must not overwrite it |
 | `leaderboard` | `{ rebirths, cash, strength, playTime }`, rows `{ id, name, value }`, top 10 |
+| `offlineEarnings` | `{ seconds, cash, strength }` waiting to be claimed, sent after `progress` |
+| `offlineClaimed` | `{ cash, strength }` just paid; the client adds the same amounts |
 | `hatched` | `{ username, pets }` someone else's rare hatch |
 
 Room state (`WorldState.players`) syncs pose, pets, aura, avatar, name and the leaderboard stats
 (`rebirths cash strength playTime`). Playtime is measured by the server clock, never client-reported.
+
+Offline earnings: the gap between an account's `lastSeenAt` (heartbeat + disconnect, server clock) and its next join accrues into `offlineSeconds` (min 60 s, capped at 12 h), paid per hour at `OFFLINE_CASH_PER_HOUR` / `OFFLINE_STRENGTH_PER_HOUR` in `src/constants.ts`. `claimOffline` is a compare-and-set on `offlineSeconds`, so a double click or a second tab pays once.
 
 The game is client-authoritative: the server only enforces shape and bounds on saves
 (`src/sanitize.ts`). Caps and the `upgrades`/`passes` key lists in `src/constants.ts` must be kept in
